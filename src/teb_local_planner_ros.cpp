@@ -209,7 +209,6 @@ bool TebLocalPlannerROS::setPlan(const std::vector<geometry_msgs::PoseStamped>& 
   // the local planner checks whether it is required to reinitialize the trajectory or not within each velocity computation step.  
             
   // reset goal_reached_ flag
-  goal_reached_ = false;
   
   return true;
 }
@@ -243,8 +242,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
   cmd_vel.header.stamp = ros::Time::now();
   cmd_vel.header.frame_id = robot_base_frame_;
   cmd_vel.twist.linear.x = cmd_vel.twist.linear.y = cmd_vel.twist.angular.z = 0;
-  goal_reached_ = false;  
-  
+    
   // Get robot pose
   geometry_msgs::PoseStamped robot_pose;
   costmap_ros_->getRobotPose(robot_pose);
@@ -437,6 +435,7 @@ bool TebLocalPlannerROS::isGoalReached()
 {
   if (goal_reached_)
   {
+    goal_reached_ = false;
     ROS_INFO("GOAL Reached!");
     planner_->clearPlanner();
     return true;
@@ -1165,5 +1164,4 @@ double TebLocalPlannerROS::getNumberFromXMLRPC(XmlRpc::XmlRpcValue& value, const
 }
 
 } // end namespace teb_local_planner
-
 
