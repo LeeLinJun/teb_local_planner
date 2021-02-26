@@ -59,17 +59,6 @@
 #include <g2o/solvers/csparse/linear_solver_csparse.h>
 #include <g2o/solvers/cholmod/linear_solver_cholmod.h>
 
-// g2o custom edges and vertices for the TEB planner
-#include <teb_local_planner/g2o_types/edge_velocity.h>
-#include <teb_local_planner/g2o_types/edge_acceleration.h>
-#include <teb_local_planner/g2o_types/edge_kinematics.h>
-#include <teb_local_planner/g2o_types/edge_time_optimal.h>
-#include <teb_local_planner/g2o_types/edge_shortest_path.h>
-#include <teb_local_planner/g2o_types/edge_obstacle.h>
-#include <teb_local_planner/g2o_types/edge_dynamic_obstacle.h>
-#include <teb_local_planner/g2o_types/edge_via_point.h>
-#include <teb_local_planner/g2o_types/edge_prefer_rotdir.h>
-
 // messages
 #include <nav_msgs/Path.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -144,8 +133,11 @@ public:
   void initialize(const TebConfig& cfg, ObstContainer* obstacles = NULL, RobotFootprintModelPtr robot_model = boost::make_shared<PointRobotFootprint>(),
                   TebVisualizationPtr visual = TebVisualizationPtr(), const ViaPointContainer* via_points = NULL);
   
+  /**
+    * @param robot_model Shared pointer to the robot shape model used for optimization (optional)
+    */
+  void updateRobotModel(RobotFootprintModelPtr robot_model );
   
-
   /** @name Plan a trajectory  */
   //@{
   
@@ -399,6 +391,11 @@ public:
    *         otherwise \c false (also if no optimization has been called before).
    */
   bool isOptimized() const {return optimized_;};
+
+  /**
+   * @brief Returns true if the planner has diverged.
+   */
+  bool hasDiverged() const override;
 	
   /**
    * @brief Compute the cost vector of a given optimization problen (hyper-graph must exist).
@@ -612,7 +609,6 @@ protected:
   
   /**
    * @brief Add all edges (local cost functions) related to keeping a distance from static obstacles (legacy association strategy)
-   * @warning do not combine with AddEdgesInflatedObstacles
    * @see EdgeObstacle
    * @see buildGraph
    * @see optimizeGraph
@@ -664,6 +660,13 @@ protected:
    * @see optimizeGraph
    */
   void AddEdgesPreferRotDir(); 
+
+  /**
+   * @brief Add all edges (local cost function) for reducing the velocity of a vertex due to its associated obstacles
+   * @see buildGraph
+   * @see optimizeGraph
+   */
+  void AddEdgesVelocityObstacleRatio();
   
   //@}
   
@@ -679,6 +682,7 @@ protected:
   const TebConfig* cfg_; //!< Config class that stores and manages all related parameters
   ObstContainer* obstacles_; //!< Store obstacles that are relevant for planning
   const ViaPointContainer* via_points_; //!< Store via points for planning
+  std::vector<ObstContainer> obstacles_per_vertex_; //!< Store the obstacles associated with the n-1 initial vertices
   
   double cost_; //!< Store cost value of the current hyper-graph
   RotType prefer_rotdir_; //!< Store whether to prefer a specific initial rotation in optimization (might be activated in case the robot oscillates)

@@ -81,7 +81,9 @@ void TebConfig::loadRosParamFromNodeHandle(const ros::NodeHandle& nh)
   nh.param("wheelbase", robot.wheelbase, robot.wheelbase);
   nh.param("cmd_angle_instead_rotvel", robot.cmd_angle_instead_rotvel, robot.cmd_angle_instead_rotvel);
   nh.param("is_footprint_dynamic", robot.is_footprint_dynamic, robot.is_footprint_dynamic);
-  
+  nh.param("use_proportional_saturation", robot.use_proportional_saturation, robot.use_proportional_saturation);
+  nh.param("transform_tolerance", robot.transform_tolerance, robot.transform_tolerance);
+
   // GoalTolerance
   nh.param("xy_goal_tolerance", goal_tolerance.xy_goal_tolerance, goal_tolerance.xy_goal_tolerance);
   nh.param("yaw_goal_tolerance", goal_tolerance.yaw_goal_tolerance, goal_tolerance.yaw_goal_tolerance);
@@ -101,6 +103,9 @@ void TebConfig::loadRosParamFromNodeHandle(const ros::NodeHandle& nh)
   nh.param("obstacle_association_cutoff_factor", obstacles.obstacle_association_cutoff_factor, obstacles.obstacle_association_cutoff_factor);
   nh.param("costmap_converter_plugin", obstacles.costmap_converter_plugin, obstacles.costmap_converter_plugin);
   nh.param("costmap_converter_spin_thread", obstacles.costmap_converter_spin_thread, obstacles.costmap_converter_spin_thread);
+  nh.param("obstacle_proximity_ratio_max_vel",  obstacles.obstacle_proximity_ratio_max_vel, obstacles.obstacle_proximity_ratio_max_vel);
+  nh.param("obstacle_proximity_lower_bound", obstacles.obstacle_proximity_lower_bound, obstacles.obstacle_proximity_lower_bound);
+  nh.param("obstacle_proximity_upper_bound", obstacles.obstacle_proximity_upper_bound, obstacles.obstacle_proximity_upper_bound);
   
   // Optimization
   nh.param("no_inner_iterations", optim.no_inner_iterations, optim.no_inner_iterations);
@@ -123,6 +128,7 @@ void TebConfig::loadRosParamFromNodeHandle(const ros::NodeHandle& nh)
   nh.param("weight_inflation", optim.weight_inflation, optim.weight_inflation);
   nh.param("weight_dynamic_obstacle", optim.weight_dynamic_obstacle, optim.weight_dynamic_obstacle);    
   nh.param("weight_dynamic_obstacle_inflation", optim.weight_dynamic_obstacle_inflation, optim.weight_dynamic_obstacle_inflation);
+  nh.param("weight_velocity_obstacle_ratio", optim.weight_velocity_obstacle_ratio, optim.weight_velocity_obstacle_ratio);
   nh.param("weight_viapoint", optim.weight_viapoint, optim.weight_viapoint);
   nh.param("weight_prefer_rotdir", optim.weight_prefer_rotdir, optim.weight_prefer_rotdir);
   nh.param("weight_adapt_factor", optim.weight_adapt_factor, optim.weight_adapt_factor);
@@ -133,11 +139,13 @@ void TebConfig::loadRosParamFromNodeHandle(const ros::NodeHandle& nh)
   nh.param("enable_multithreading", hcp.enable_multithreading, hcp.enable_multithreading); 
   nh.param("simple_exploration", hcp.simple_exploration, hcp.simple_exploration); 
   nh.param("max_number_classes", hcp.max_number_classes, hcp.max_number_classes);
+  nh.param("max_number_plans_in_current_class", hcp.max_number_plans_in_current_class, hcp.max_number_plans_in_current_class);
   nh.param("selection_obst_cost_scale", hcp.selection_obst_cost_scale, hcp.selection_obst_cost_scale);
   nh.param("selection_prefer_initial_plan", hcp.selection_prefer_initial_plan, hcp.selection_prefer_initial_plan);
   nh.param("selection_viapoint_cost_scale", hcp.selection_viapoint_cost_scale, hcp.selection_viapoint_cost_scale);
   nh.param("selection_cost_hysteresis", hcp.selection_cost_hysteresis, hcp.selection_cost_hysteresis); 
   nh.param("selection_alternative_time_cost", hcp.selection_alternative_time_cost, hcp.selection_alternative_time_cost); 
+  nh.param("selection_dropping_probability", hcp.selection_dropping_probability, hcp.selection_dropping_probability); 
   nh.param("switching_blocking_period", hcp.switching_blocking_period, hcp.switching_blocking_period);
   nh.param("roadmap_graph_samples", hcp.roadmap_graph_no_samples, hcp.roadmap_graph_no_samples); 
   nh.param("roadmap_graph_area_width", hcp.roadmap_graph_area_width, hcp.roadmap_graph_area_width); 
@@ -162,6 +170,8 @@ void TebConfig::loadRosParamFromNodeHandle(const ros::NodeHandle& nh)
   nh.param("oscillation_omega_eps", recovery.oscillation_omega_eps, recovery.oscillation_omega_eps);
   nh.param("oscillation_recovery_min_duration", recovery.oscillation_recovery_min_duration, recovery.oscillation_recovery_min_duration);
   nh.param("oscillation_filter_duration", recovery.oscillation_filter_duration, recovery.oscillation_filter_duration);
+  nh.param("divergence_detection", recovery.divergence_detection_enable, recovery.divergence_detection_enable);
+  nh.param("divergence_detection_max_chi_squared", recovery.divergence_detection_max_chi_squared, recovery.divergence_detection_max_chi_squared);
 
   checkParameters();
   checkDeprecated(nh);
@@ -197,6 +207,7 @@ void TebConfig::reconfigure(TebLocalPlannerReconfigureConfig& cfg)
   robot.min_turning_radius = cfg.min_turning_radius;
   robot.wheelbase = cfg.wheelbase;
   robot.cmd_angle_instead_rotvel = cfg.cmd_angle_instead_rotvel;
+  robot.use_proportional_saturation = cfg.use_proportional_saturation;
   
   // GoalTolerance
   goal_tolerance.xy_goal_tolerance = cfg.xy_goal_tolerance;
@@ -214,7 +225,9 @@ void TebConfig::reconfigure(TebLocalPlannerReconfigureConfig& cfg)
   obstacles.obstacle_association_cutoff_factor = cfg.obstacle_association_cutoff_factor;
   obstacles.costmap_obstacles_behind_robot_dist = cfg.costmap_obstacles_behind_robot_dist;
   obstacles.obstacle_poses_affected = cfg.obstacle_poses_affected;
-
+  obstacles.obstacle_proximity_ratio_max_vel = cfg.obstacle_proximity_ratio_max_vel;
+  obstacles.obstacle_proximity_lower_bound = cfg.obstacle_proximity_lower_bound;
+  obstacles.obstacle_proximity_upper_bound = cfg.obstacle_proximity_upper_bound;
   
   // Optimization
   optim.no_inner_iterations = cfg.no_inner_iterations;
@@ -237,6 +250,7 @@ void TebConfig::reconfigure(TebLocalPlannerReconfigureConfig& cfg)
   optim.weight_inflation = cfg.weight_inflation;
   optim.weight_dynamic_obstacle = cfg.weight_dynamic_obstacle;
   optim.weight_dynamic_obstacle_inflation = cfg.weight_dynamic_obstacle_inflation;
+  optim.weight_velocity_obstacle_ratio = cfg.weight_velocity_obstacle_ratio;
   optim.weight_viapoint = cfg.weight_viapoint;
   optim.weight_adapt_factor = cfg.weight_adapt_factor;
   optim.obstacle_cost_exponent = cfg.obstacle_cost_exponent;
@@ -244,11 +258,13 @@ void TebConfig::reconfigure(TebLocalPlannerReconfigureConfig& cfg)
   // Homotopy Class Planner
   hcp.enable_multithreading = cfg.enable_multithreading;
   hcp.max_number_classes = cfg.max_number_classes; 
+  hcp.max_number_plans_in_current_class = cfg.max_number_plans_in_current_class;
   hcp.selection_cost_hysteresis = cfg.selection_cost_hysteresis;
   hcp.selection_prefer_initial_plan = cfg.selection_prefer_initial_plan;
   hcp.selection_obst_cost_scale = cfg.selection_obst_cost_scale;
   hcp.selection_viapoint_cost_scale = cfg.selection_viapoint_cost_scale;
   hcp.selection_alternative_time_cost = cfg.selection_alternative_time_cost;
+  hcp.selection_dropping_probability = cfg.selection_dropping_probability;
   hcp.switching_blocking_period = cfg.switching_blocking_period;
   
   hcp.obstacle_heading_threshold = cfg.obstacle_heading_threshold;
@@ -262,9 +278,11 @@ void TebConfig::reconfigure(TebLocalPlannerReconfigureConfig& cfg)
   hcp.visualize_with_time_as_z_axis_scale = cfg.visualize_with_time_as_z_axis_scale;
   
   // Recovery
-  
   recovery.shrink_horizon_backup = cfg.shrink_horizon_backup;
   recovery.oscillation_recovery = cfg.oscillation_recovery;
+  recovery.divergence_detection_enable = cfg.divergence_detection_enable;
+  recovery.divergence_detection_max_chi_squared = cfg.divergence_detection_max_chi_squared;
+
   
   checkParameters();
 }

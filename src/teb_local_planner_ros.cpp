@@ -81,6 +81,10 @@ TebLocalPlannerROS::~TebLocalPlannerROS()
 void TebLocalPlannerROS::reconfigureCB(TebLocalPlannerReconfigureConfig& config, uint32_t level)
 {
   cfg_.reconfigure(config);
+  ros::NodeHandle nh("~/" + name_);
+  // create robot footprint/contour model for optimization
+  RobotFootprintModelPtr robot_model = getRobotFootprintFromParamServer(nh);
+  planner_->updateRobotModel(robot_model);
 }
 
 void TebLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costmap_2d::Costmap2DROS* costmap_ros)
@@ -88,6 +92,7 @@ void TebLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costm
   // check if the plugin is already initialized
   if(!initialized_)
   {	
+    name_ = name;
     // create Node Handle with name of plugin (as used in move_base for loading)
     ros::NodeHandle nh("~/" + name);
 	        
@@ -357,6 +362,21 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
     message = "teb_local_planner was not able to obtain a local plan";
     return mbf_msgs::ExePathResult::NO_VALID_CMD;
   }
+
+  // Check for divergence
+  if (planner_->hasDiverged())
+  {
+    cmd_vel.twist.linear.x = cmd_vel.twist.linear.y = cmd_vel.twist.angular.z = 0;
+
+    // Reset everything to start again with the initialization of new trajectories.
+    planner_->clearPlanner();
+    ROS_WARN_THROTTLE(1.0, "TebLocalPlannerROS: the trajectory has diverged. Resetting planner...");
+
+    ++no_infeasible_plans_; // increase number of infeasible solutions in a row
+    time_last_infeasible_plan_ = ros::Time::now();
+    last_cmd_ = cmd_vel.twist;
+    return mbf_msgs::ExePathResult::NO_VALID_CMD;
+  }
          
   // Check feasibility (but within the first few states only)
   if(cfg_.robot.is_footprint_dynamic)
@@ -384,6 +404,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
 
   // Get the velocity command for this sampling interval
   if (!planner_->getVelocityCommand(cmd_vel.twist.linear.x, cmd_vel.twist.linear.y, cmd_vel.twist.angular.z, cfg_.trajectory.control_look_ahead_poses))
+
   {
     planner_->clearPlanner();
     ROS_WARN("TebLocalPlannerROS: velocity command invalid. Resetting planner...");
@@ -533,7 +554,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCustomObstacles()
     {
       geometry_msgs::TransformStamped obstacle_to_map =  tf_->lookupTransform(global_frame_, ros::Time(0),
                                                                               custom_obstacle_msg_.header.frame_id, ros::Time(0),
-                                                                              custom_obstacle_msg_.header.frame_id, ros::Duration(0.5));
+                                                                              custom_obstacle_msg_.header.frame_id, ros::Duration(cfg_.robot.transform_tolerance));
       obstacle_to_map_eig = tf2::transformToEigen(obstacle_to_map);
     }
     catch (tf::TransformException ex)
@@ -690,7 +711,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
 
     // get plan_to_global_transform from plan frame to global_frame
     geometry_msgs::TransformStamped plan_to_global_transform = tf.lookupTransform(global_frame, ros::Time(), plan_pose.header.frame_id, plan_pose.header.stamp,
-                                                                                  plan_pose.header.frame_id, ros::Duration(0.5));
+                                                                                  plan_pose.header.frame_id, ros::Duration(cfg_.robot.transform_tolerance));
 
     //let's get the pose of the robot in the frame of the plan
     geometry_msgs::PoseStamped robot_pose;
@@ -708,6 +729,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
     double sq_dist = 1e10;
     
     //we need to loop to a point on the plan that is within a certain distance of the robot
+    bool robot_reached = false;
     for(int j=0; j < (int)global_plan.size(); ++j)
     {
       double x_diff = robot_pose.pose.position.x - global_plan[j].pose.position.x;
@@ -716,10 +738,15 @@ bool TebLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
       if (new_sq_dist > sq_dist_threshold)
         break;  // force stop if we have reached the costmap border
 
+      if (robot_reached && new_sq_dist > sq_dist)
+        break;
+
       if (new_sq_dist < sq_dist) // find closest distance
       {
         sq_dist = new_sq_dist;
         i = j;
+        if (sq_dist < 0.05)      // 2.5 cm to the robot; take the immediate local minima; if it's not the global
+          robot_reached = true;  // minima, probably means that there's a loop in the path, and so we prefer this
       }
     }
     
@@ -840,21 +867,18 @@ double TebLocalPlannerROS::estimateLocalGoalOrientation(const std::vector<geomet
       
 void TebLocalPlannerROS::saturateVelocity(double& vx, double& vy, double& omega, double max_vel_x, double max_vel_y, double max_vel_theta, double max_vel_x_backwards) const
 {
+  double ratio_x = 1, ratio_omega = 1, ratio_y = 1;
   // Limit translational velocity for forward driving
   if (vx > max_vel_x)
-    vx = max_vel_x;
+    ratio_x = max_vel_x / vx;
   
   // limit strafing velocity
-  if (vy > max_vel_y)
-    vy = max_vel_y;
-  else if (vy < -max_vel_y)
-    vy = -max_vel_y;
+  if (vy > max_vel_y || vy < -max_vel_y)
+    ratio_y = std::abs(vy / max_vel_y);
   
   // Limit angular velocity
-  if (omega > max_vel_theta)
-    omega = max_vel_theta;
-  else if (omega < -max_vel_theta)
-    omega = -max_vel_theta;
+  if (omega > max_vel_theta || omega < -max_vel_theta)
+    ratio_omega = std::abs(max_vel_theta / omega);
   
   // Limit backwards velocity
   if (max_vel_x_backwards<=0)
@@ -862,7 +886,21 @@ void TebLocalPlannerROS::saturateVelocity(double& vx, double& vy, double& omega,
     ROS_WARN_ONCE("TebLocalPlannerROS(): Do not choose max_vel_x_backwards to be <=0. Disable backwards driving by increasing the optimization weight for penalyzing backwards driving.");
   }
   else if (vx < -max_vel_x_backwards)
-    vx = -max_vel_x_backwards;
+    ratio_x = - max_vel_x_backwards / vx;
+
+  if (cfg_.robot.use_proportional_saturation)
+  {
+    double ratio = std::min(std::min(ratio_x, ratio_y), ratio_omega);
+    vx *= ratio;
+    vy *= ratio;
+    omega *= ratio;
+  }
+  else
+  {
+    vx *= ratio_x;
+    vy *= ratio_y;
+    omega *= ratio_omega;
+  }
 }
      
      
@@ -963,7 +1001,6 @@ void TebLocalPlannerROS::configureBackupModes(std::vector<geometry_msgs::PoseSta
     }
 
 }
-     
      
 void TebLocalPlannerROS::customObstacleCB(const costmap_converter::ObstacleArrayMsg::ConstPtr& obst_msg)
 {
